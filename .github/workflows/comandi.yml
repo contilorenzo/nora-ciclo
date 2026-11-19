@@ -1,0 +1,39 @@
+name: comandi-regia
+# Bottoni della regia (approva, ok copione, riprova, scarta...): job leggero, parte subito dal Worker
+# e non aspetta il video in produzione (gruppo di concorrenza diverso da ciclo.yml).
+on:
+  schedule:
+    - cron: "5-55/10 * * * *"  # riserva, se il Worker non riesce a farlo partire
+  workflow_dispatch:
+concurrency: { group: comandi, cancel-in-progress: false }
+jobs:
+  comandi:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      TZ: Europe/Rome
+      GH_TEST: "1"
+      CF_CHIAVE: ${{ secrets.CF_CHIAVE }}
+      ZERNIO_KEY: ${{ secrets.ZERNIO_KEY }}
+    steps:
+      - name: Ci sono comandi?
+        id: c
+        run: |
+          a=$(curl -fsS -A affiliate-automation -H "x-chiave: $CF_CHIAVE" https://noramarkets.it/regia/gh/azioni || echo "[]")
+          if [ "$a" != "[]" ]; then echo "si=si" >> "$GITHUB_OUTPUT"; else echo "Nessun comando."; fi
+      - name: Scarica il repository privato
+        if: steps.c.outputs.si == 'si'
+        env: { CHIAVE_PRIVATO: "${{ secrets.NORA_DEPLOY_KEY }}" }
+        run: |
+          mkdir -p ~/.ssh && printf '%s\n' "$CHIAVE_PRIVATO" > ~/.ssh/nora && chmod 600 ~/.ssh/nora
+          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+          GIT_SSH_COMMAND="ssh -i ~/.ssh/nora -o IdentitiesOnly=yes" git clone --depth 1 git@github.com:contilorenzo/nora-video.git nora
+      - name: ffmpeg (copertine del sito)
+        if: steps.c.outputs.si == 'si'
+        timeout-minutes: 3
+        run: |
+          command -v ffmpeg >/dev/null || curl -fsSL --retry 3 https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz | sudo tar -xJ --strip-components=2 -C /usr/local/bin --wildcards '*/bin/ffmpeg' '*/bin/ffprobe'
+      - name: Esegui i comandi
+        if: steps.c.outputs.si == 'si'
+        working-directory: nora
+        run: python3 scripts/gh_video.py comandi
