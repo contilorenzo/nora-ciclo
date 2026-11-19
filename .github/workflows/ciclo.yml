@@ -1,0 +1,58 @@
+name: ciclo-video
+# Repository pubblico: contiene solo questo workflow (minuti illimitati). Prompt, script e grafiche stanno nel repository privato nora-video.
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+concurrency: { group: ciclo, cancel-in-progress: false }
+jobs:
+  ciclo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    env:
+      TZ: Europe/Rome
+      GH_TEST: "1"
+      CF_CHIAVE: ${{ secrets.CF_CHIAVE }}
+      ELEVENLABS_KEY: ${{ secrets.ELEVENLABS_KEY }}
+      ZERNIO_KEY: ${{ secrets.ZERNIO_KEY }}
+      CLAUDE_TOKEN_1: ${{ secrets.CLAUDE_TOKEN_1 }}
+      CLAUDE_TOKEN_2: ${{ secrets.CLAUDE_TOKEN_2 }}
+    steps:
+      - name: C'è lavoro? (coda o azioni dalla regia)
+        id: c
+        run: |
+          c=$(curl -fsS -A affiliate-automation -H "x-chiave: $CF_CHIAVE" https://noramarkets.it/regia/gh/coda || echo "[]")
+          a=$(curl -fsS -A affiliate-automation -H "x-chiave: $CF_CHIAVE" https://noramarkets.it/regia/gh/azioni || echo "[]")
+          if [ "$c" != "[]" ] || [ "$a" != "[]" ]; then echo "lavoro=si" >> "$GITHUB_OUTPUT"; else echo "Niente da fare."; fi
+      - name: Scarica il repository privato
+        if: steps.c.outputs.lavoro == 'si'
+        env: { CHIAVE_PRIVATO: "${{ secrets.NORA_DEPLOY_KEY }}" }
+        run: |
+          mkdir -p ~/.ssh && printf '%s\n' "$CHIAVE_PRIVATO" > ~/.ssh/nora && chmod 600 ~/.ssh/nora
+          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+          GIT_SSH_COMMAND="ssh -i ~/.ssh/nora -o IdentitiesOnly=yes" git clone --depth 1 git@github.com:contilorenzo/nora-video.git nora
+      - if: steps.c.outputs.lavoro == 'si'
+        uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - if: steps.c.outputs.lavoro == 'si'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.npm
+            nora/remotion/node_modules
+            ~/.cache/remotion
+          key: remotion-${{ hashFiles('nora/remotion/package-lock.json') }}
+      - if: steps.c.outputs.lavoro == 'si'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg fonts-noto-color-emoji
+      - if: steps.c.outputs.lavoro == 'si'
+        run: npm install -g @anthropic-ai/claude-code
+      - if: steps.c.outputs.lavoro == 'si'
+        working-directory: nora/remotion
+        run: npm ci --no-audit --no-fund || npm install --no-audit --no-fund
+      - if: steps.c.outputs.lavoro == 'si'
+        working-directory: nora/remotion
+        run: npx remotion browser ensure
+      - name: Ciclo video
+        if: steps.c.outputs.lavoro == 'si'
+        working-directory: nora
+        run: python3 scripts/gh_video.py ciclo
